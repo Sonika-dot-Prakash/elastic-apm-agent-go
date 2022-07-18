@@ -31,14 +31,14 @@ func TraceAndServe(h http.Handler, w http.ResponseWriter, r *http.Request, cfg *
 	}
 	tx, body, req := apmhttp.StartTransactionWithBody(m.tracer, cfg.Resource, r)
 	defer tx.End()
-	rw, ddrw := wrapResponseWriter(w)
-	Debug.Println("ddrw.status: ", ddrw.status)
+	// Debug.Println(tx.TraceContext().State)
+	rw, resp := apmhttp.WrapResponseWriter(w)
+	Debug.Println("resp.StatusCode: ", resp.StatusCode)
 	Debug.Println("req.Response: ", req.Response)
 	Debug.Println("req.Header: ", req.Header)
 	Debug.Println("body: ", body)
 	defer func() {
-		httpStatus := getStatus(ddrw.status)
-		Debug.Println("httpStatus: ", httpStatus)
+		Debug.Println("r.response: ", r.Response)
 		panicked := false
 		if v := recover(); v != nil {
 			Info.Println("v is not nil.")
@@ -51,21 +51,28 @@ func TraceAndServe(h http.Handler, w http.ResponseWriter, r *http.Request, cfg *
 			panicked = true
 		}
 		if panicked {
-			w.WriteHeader(http.StatusInternalServerError)
-			tx.Result = apmhttp.StatusCodeResult(http.StatusInternalServerError)
-			if tx.Sampled() {
-				setContext(&tx.Context, req, http.StatusInternalServerError, body)
-			}
+			resp.StatusCode = http.StatusInternalServerError
+			apmhttp.SetTransactionContext(tx, req, resp, body)
+			// 	w.WriteHeader(http.StatusInternalServerError)
+			// 	tx.Result = apmhttp.StatusCodeResult(http.StatusInternalServerError)
+			// 	if tx.Sampled() {
+			// 		setContext(&tx.Context, req, http.StatusInternalServerError, body)
+			// 	}
 		} else {
-			w.WriteHeader(httpStatus)
-			tx.Result = apmhttp.StatusCodeResult(httpStatus)
-			if tx.Sampled() {
-				setContext(&tx.Context, req, httpStatus, body)
-			}
+			apmhttp.SetTransactionContext(tx, req, resp, body)
+			// 	w.WriteHeader(httpStatus)
+			// 	tx.Result = apmhttp.StatusCodeResult(httpStatus)
+			// 	if tx.Sampled() {
+			// 		setContext(&tx.Context, req, httpStatus, body)
+			// 	}
 		}
 		body.Discard()
 	}()
-	h.ServeHTTP(rw, r)
+	h.ServeHTTP(rw, req)
+	if resp.StatusCode == 0 {
+		resp.StatusCode = http.StatusOK
+	}
+	Debug.Println("resp.StatusCode now: ", resp.StatusCode)
 }
 
 func setContext(ctx *apm.Context, req *http.Request, status int, body *apm.BodyCapturer) {
