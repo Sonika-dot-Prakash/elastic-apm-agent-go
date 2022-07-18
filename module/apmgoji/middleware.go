@@ -111,6 +111,7 @@ func Middleware() func(*web.C, http.Handler) http.Handler {
 	Info.Println("\nNew request...")
 	return func(c *web.C, h http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			Debug.Println("context web.C: ", *c)
 			resource := r.Method
 			p := web.GetMatch(*c).RawPattern()
 			Debug.Println("method: ", resource)

@@ -21,6 +21,7 @@ type middleware struct {
 // according to the specified config.
 func TraceAndServe(h http.Handler, w http.ResponseWriter, r *http.Request, cfg *ServeConfig) {
 	Info.Println("Inside TraceandServe...")
+	Debug.Println("w headers:", w.Header())
 	if cfg == nil {
 		cfg = new(ServeConfig)
 	}
@@ -38,23 +39,33 @@ func TraceAndServe(h http.Handler, w http.ResponseWriter, r *http.Request, cfg *
 	defer func() {
 		httpStatus := getStatus(ddrw.status)
 		Debug.Println("httpStatus: ", httpStatus)
+		panicked := false
 		if v := recover(); v != nil {
 			Info.Println("v is not nil.")
 			Debug.Println("v: ", v)
 			w.WriteHeader(http.StatusInternalServerError)
 			e := m.tracer.Recovered(v)
 			e.SetTransaction(tx)
-			setContext(&e.Context, req, httpStatus, body)
+			setContext(&e.Context, req, http.StatusInternalServerError, body)
 			e.Send()
+			panicked = true
 		}
-		w.WriteHeader(httpStatus)
-		tx.Result = apmhttp.StatusCodeResult(httpStatus)
-		if tx.Sampled() {
-			setContext(&tx.Context, req, httpStatus, body)
+		if panicked {
+			w.WriteHeader(http.StatusInternalServerError)
+			tx.Result = apmhttp.StatusCodeResult(http.StatusInternalServerError)
+			if tx.Sampled() {
+				setContext(&tx.Context, req, http.StatusInternalServerError, body)
+			}
+		} else {
+			w.WriteHeader(httpStatus)
+			tx.Result = apmhttp.StatusCodeResult(httpStatus)
+			if tx.Sampled() {
+				setContext(&tx.Context, req, httpStatus, body)
+			}
 		}
 		body.Discard()
 	}()
-	h.ServeHTTP(rw, r.WithContext(r.Context())) // this may cause panic if context is nil
+	h.ServeHTTP(rw, r)
 }
 
 func setContext(ctx *apm.Context, req *http.Request, status int, body *apm.BodyCapturer) {
