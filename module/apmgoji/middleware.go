@@ -2,23 +2,42 @@ package apmgoji
 
 import (
 	"fmt"
-	"log"
+	// "log"
 	"net/http"
-	"os"
-	"path/filepath"
+	// "os"
+	// "path/filepath"
 
 	"github.com/zenazn/goji/web"
 
-	// "go.elastic.co/apm/v2"
-	// "go.elastic.co/apm/module/apmhttp/v2"
-
+	"go.elastic.co/apm/module/apmhttp/v2"
+	"go.elastic.co/apm/v2"
 	"go.elastic.co/apm/v2/stacktrace"
 )
 
-var Info *log.Logger
-var Debug *log.Logger
-var Error *log.Logger
-var Warn *log.Logger
+// var Info *log.Logger
+// var Debug *log.Logger
+// var Error *log.Logger
+// var Warn *log.Logger
+
+// var t *apm.Tracer
+
+func init() {
+	stacktrace.RegisterLibraryPackage(
+		"github.com/zenazn",
+	)
+	//t, _ = apm.NewTracer("", "")
+	// filePath, _ := filepath.Abs("C:\\Users\\Sonika.Prakash\\GitHub\\goji web app\\apmgojiLogs.log")
+	// openLogFile, _ := os.OpenFile(filePath, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+	// Info = log.New(openLogFile, "\tINFO\t", log.Ldate|log.Ltime|log.Lmsgprefix|log.Lshortfile)
+	// Debug = log.New(openLogFile, "\tDEBUG\t", log.Ldate|log.Ltime|log.Lmsgprefix|log.Lshortfile)
+	// Error = log.New(openLogFile, "\tERROR\t", log.Ldate|log.Ltime|log.Lmsgprefix|log.Lshortfile)
+	// Warn = log.New(openLogFile, "\tWARN\t", log.Ldate|log.Ltime|log.Lmsgprefix|log.Lshortfile)
+}
+
+// ServeConfig specifies the tracing configuration when using TraceAndServe.
+type ServeConfig struct {
+	Resource string
+}
 
 // type middleware struct {
 // 	// engine *web.Mux
@@ -108,37 +127,97 @@ var Warn *log.Logger
 
 // Middleware returns a goji middleware function that will trace incoming requests.
 func Middleware() func(*web.C, http.Handler) http.Handler {
-	Info.Println("\nNew request...")
+	// Info.Println("\nNew request...")
+	m := &middleware{
+		tracer: apm.DefaultTracer(),
+	}
 	return func(c *web.C, h http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			Debug.Println("context web.C: ", *c)
+			// Debug.Println("context web.C: ", *c)
 			resource := r.Method
 			p := web.GetMatch(*c).RawPattern()
-			Debug.Println("method: ", resource)
-			Debug.Println("p: ", p)
+			// Debug.Println("method: ", resource)
+			// Debug.Println("p: ", p)
 			if p != nil {
 				resource += fmt.Sprintf(" %s", p)
-				Debug.Println("resource: ", resource)
+				// Debug.Println("resource: ", resource)
 			} else {
 				p = r.URL.Path
 				resource += fmt.Sprintf(" %s", p)
-				Debug.Println("resource: ", resource)
+				// Debug.Println("resource: ", resource)
 			}
-			TraceAndServe(h, w, r, &ServeConfig{
+			m.TraceAndServe(h, w, r, &ServeConfig{
 				Resource: resource,
 			})
 		})
 	}
 }
 
-func init() {
-	stacktrace.RegisterLibraryPackage(
-		"github.com/zenazn",
-	)
-	filePath, _ := filepath.Abs("C:\\Users\\Sonika.Prakash\\GitHub\\goji web app\\apmgojiLogs.log")
-	openLogFile, _ := os.OpenFile(filePath, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
-	Info = log.New(openLogFile, "\tINFO\t", log.Ldate|log.Ltime|log.Lmsgprefix|log.Lshortfile)
-	Debug = log.New(openLogFile, "\tDEBUG\t", log.Ldate|log.Ltime|log.Lmsgprefix|log.Lshortfile)
-	Error = log.New(openLogFile, "\tERROR\t", log.Ldate|log.Ltime|log.Lmsgprefix|log.Lshortfile)
-	Warn = log.New(openLogFile, "\tWARN\t", log.Ldate|log.Ltime|log.Lmsgprefix|log.Lshortfile)
+type middleware struct {
+	// engine *web.Mux
+	tracer *apm.Tracer
+}
+
+// TraceAndServe serves the handler h using the given ResponseWriter and Request, applying tracing
+// according to the specified config.
+func (m *middleware) TraceAndServe(h http.Handler, w http.ResponseWriter, r *http.Request, cfg *ServeConfig) {
+	// Info.Println("Inside TraceandServe...")
+	// Debug.Println("w headers:", w.Header())
+	if cfg == nil {
+		cfg = new(ServeConfig)
+	}
+	// Debug.Println("cfg: ", cfg)
+
+	tx, body, req := apmhttp.StartTransactionWithBody(m.tracer, cfg.Resource, r)
+	defer tx.End()
+	// Debug.Println(tx.TraceContext().State)
+	rw, resp := apmhttp.WrapResponseWriter(w)
+	// Debug.Println("resp.StatusCode: ", resp.StatusCode)
+	// Debug.Println("req.Response: ", req.Response)
+	// Debug.Println("req.Header: ", req.Header)
+	// Debug.Println("body: ", body)
+	defer func() {
+		// Debug.Println("r.response: ", r.Response)
+		panicked := false
+		if v := recover(); v != nil {
+			// Info.Println("v is not nil.")
+			// Debug.Println("v: ", v)
+			w.WriteHeader(http.StatusInternalServerError)
+			e := m.tracer.Recovered(v)
+			e.SetTransaction(tx)
+			setContext(&e.Context, req, http.StatusInternalServerError, body)
+			e.Send()
+			panicked = true
+		}
+		if panicked {
+			resp.StatusCode = http.StatusInternalServerError
+			apmhttp.SetTransactionContext(tx, req, resp, body)
+			// 	w.WriteHeader(http.StatusInternalServerError)
+			// 	tx.Result = apmhttp.StatusCodeResult(http.StatusInternalServerError)
+			// 	if tx.Sampled() {
+			// 		setContext(&tx.Context, req, http.StatusInternalServerError, body)
+			// 	}
+		} else {
+			apmhttp.SetTransactionContext(tx, req, resp, body)
+			// 	w.WriteHeader(httpStatus)
+			// 	tx.Result = apmhttp.StatusCodeResult(httpStatus)
+			// 	if tx.Sampled() {
+			// 		setContext(&tx.Context, req, httpStatus, body)
+			// 	}
+		}
+		body.Discard()
+	}()
+	h.ServeHTTP(rw, req)
+	if resp.StatusCode == 0 {
+		resp.StatusCode = http.StatusOK
+	}
+	// Debug.Println("resp.StatusCode now: ", resp.StatusCode)
+}
+
+func setContext(ctx *apm.Context, req *http.Request, status int, body *apm.BodyCapturer) {
+	ctx.SetFramework("goji", "")
+	ctx.SetHTTPRequest(req)
+	ctx.SetHTTPRequestBody(body)
+	ctx.SetHTTPStatusCode(status)
+	ctx.SetHTTPResponseHeaders(req.Header)
 }
